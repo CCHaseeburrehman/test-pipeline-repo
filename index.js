@@ -3,7 +3,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const app = express();
-
+const password = "hardcoded-secret";
 
 
 // Hardcoded secrets
