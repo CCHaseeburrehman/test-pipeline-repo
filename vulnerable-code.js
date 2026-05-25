@@ -2,7 +2,9 @@ const express = require("express");
 const app = express();
 
 app.use(express.json());
-
+const express = require("express");
+const crypto = require("crypto");
+const app = express();
 // Hardcoded secret
 const API_KEY = "test-api-key-123456";
 const DB_PASSWORD = "supersecretpassword123";
