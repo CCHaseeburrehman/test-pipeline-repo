@@ -9,7 +9,7 @@ jobs:
   asvp-source-scan:
     runs-on: ubuntu-latest
     env:
-      ASVP_URL: ${{ secrets.ASVP_URL }}
+      ASVP_URL: ${{ secrets.ASVP_BASE_URL }}
       ASVP_TOKEN: ${{ secrets.ASVP_API_TOKEN }}
       TARGET_URL: "https://vc.averox.com"   # the app ASVP should scan
       SCAN_DIR: "./src"  # directory containing your source code
