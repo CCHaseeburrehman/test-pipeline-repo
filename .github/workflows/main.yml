@@ -11,7 +11,7 @@ jobs:
     env:
       ASVP_URL: ${{ secrets.ASVP_URL }}
       ASVP_TOKEN: ${{ secrets.ASVP_API_TOKEN }}
-      TARGET_URL: "https://your-app-under-test.example.com"   # the app ASVP should scan
+      TARGET_URL: "https://vc.averox.com"   # the app ASVP should scan
       SCAN_DIR: "./src"  # directory containing your source code
 
     steps:
