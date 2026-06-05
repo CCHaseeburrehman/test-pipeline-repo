@@ -1,8 +1,4 @@
-// index.js
 
-const express = require("express");
-const crypto = require("crypto");
-const app = express();
 
 
 onst express = require("express");
