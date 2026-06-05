@@ -11,35 +11,49 @@ on:
 jobs:
   security-scan:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Run ASVP Security Scan
-        env:
-          ASVP_API_TOKEN: ${{ secrets.ASVP_API_TOKEN }}
-          ASVP_BASE_URL: ${{ secrets.ASVP_BASE_URL }}
         run: |
-          PR_ID="${{ github.event.pull_request.number }}"
-          if [ "$PR_ID" == "null" ]; then PR_ID=""; fi
-          
-          curl -X POST \
-            -H "Authorization: Bearer $ASVP_API_TOKEN" \
+          echo "Starting ASVP scan..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer ${{ secrets.ASVP_API_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d '{
               "target": "https://vc.averox.com",
               "profile": "standard",
               "commitSha": "${{ github.sha }}",
               "branchName": "${{ github.ref_name }}",
-              "pullRequestId": "'"$PR_ID"'"
+              "pullRequestId": "${{ github.event.pull_request.number }}"
             }' \
-            $ASVP_BASE_URL/api/cli/scan > scan-result.json
+            ${{ secrets.ASVP_BASE_URL }}/api/cli/scan)
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          echo "HTTP response code: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "Error: ASVP scan API returned $HTTP_CODE"
+            echo "$RESPONSE" | head -n-1
+            exit 1
+          fi
+
+          echo "$RESPONSE" | head -n-1 > scan-result.json
+          cat scan-result.json
+
+      - name: Validate JSON
+        run: |
+          if ! jq empty scan-result.json; then
+            echo "Invalid JSON returned from ASVP API"
+            cat scan-result.json
+            exit 1
+          fi
 
       - name: Check Thresholds
         run: |
           CRITICAL=$(jq '.summary.critical' scan-result.json)
           HIGH=$(jq '.summary.high' scan-result.json)
+          echo "Critical: $CRITICAL, High: $HIGH"
           if [ "$CRITICAL" -gt 0 ]; then
             echo "Critical findings found!"
             exit 1
