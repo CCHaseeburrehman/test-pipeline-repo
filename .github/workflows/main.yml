@@ -20,7 +20,7 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.ASVP_API_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d '{
-              "target": "https://staging.example.com",
+              "target": "https://vc.averox.com",
               "profile": "standard",
               "commitSha": "${{ github.sha }}",
               "branchName": "${{ github.ref_name }}",
