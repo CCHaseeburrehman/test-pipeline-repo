@@ -23,7 +23,6 @@ jobs:
           set -euo pipefail
           command -v curl >/dev/null || { echo "::error::curl is required"; exit 1; }
           command -v jq >/dev/null   || { echo "::error::jq is required"; exit 1; }
-          command -v trivy >/dev/null || { echo "::error::trivy is required"; exit 1; }
           [ -n "${ASVP_TOKEN:-}" ] || { echo "::error::Secret ASVP_API_TOKEN is missing"; exit 1; }
           [ -n "${ASVP_URL:-}"   ] || { echo "::error::Secret ASVP_URL is missing"; exit 1; }
           echo "ASVP_URL=${ASVP_URL%/}" >> "$GITHUB_ENV"
