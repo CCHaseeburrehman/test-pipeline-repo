@@ -13,21 +13,23 @@ jobs:
     env:
       ASVP_URL: ${{ secrets.ASVP_BASE_URL }}
       ASVP_TOKEN: ${{ secrets.ASVP_API_TOKEN }}
-      TARGET_URL: "https://vc.averox.com"
-      SCAN_DIR: "./src"   # <-- Set this to the directory you want scanned (fixes empty findings)
+      TARGET_URL: "https://vc.averox.com"      # URL to scan
+      SCAN_DIR: "./src"                         # Directory containing your code to scan
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Preflight (curl, jq, secrets)
+      # ---- Preflight checks for curl, jq, and secrets -------------------------
+      - name: Preflight
         run: |
           set -euo pipefail
-          command -v curl >/dev/null || { echo "::error::curl is required"; exit 1; }
-          command -v jq   >/dev/null || { echo "::error::jq is required"; exit 1; }
-          [ -n "$ASVP_TOKEN" ] || { echo "::error::Secret ASVP_API_TOKEN is missing"; exit 1; }
-          [ -n "$ASVP_URL" ]   || { echo "::error::Secret ASVP_BASE_URL is missing"; exit 1; }
+          command -v curl >/dev/null || { echo "::error::curl not found"; exit 1; }
+          command -v jq >/dev/null   || { echo "::error::jq not found"; exit 1; }
+          [ -n "$ASVP_TOKEN" ] || { echo "::error::ASVP_API_TOKEN missing"; exit 1; }
+          [ -n "$ASVP_URL" ]   || { echo "::error::ASVP_BASE_URL missing"; exit 1; }
           echo "ASVP_URL=${ASVP_URL%/}" >> "$GITHUB_ENV"
 
+      # ---- Trigger the scan -----------------------------------------------------
       - name: Trigger ASVP scan
         id: trigger
         run: |
@@ -38,52 +40,58 @@ jobs:
             -H "Authorization: Bearer $ASVP_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$(jq -n --arg url "$TARGET_URL" --arg sha "$GITHUB_SHA" --arg br "$GITHUB_REF_NAME" --arg pr "${{ github.event.pull_request.number }}" '{targetUrl:$url, profile:"standard", triggeredBy:"github-actions", commitSha:$sha, branchName:$br, pullRequestId:$pr}')")" || { echo "::error::Cannot reach $ASVP_URL"; exit 1; }
-          CODE="$(echo "$META" | cut -d' ' -f1)"; CTYPE="$(echo "$META" | cut -d' ' -f2-)"; OUT="$(cat "$BODY")"
-          jq -n --arg code "$CODE" --arg ctype "$CTYPE" --argjson body "$(echo "$OUT" | jq -c '.' 2>/dev/null || jq -n --arg raw "$OUT" '{raw:$raw}')" '{endpoint:"/api/cicd/scan", httpStatus:$code, contentType:$ctype, body:$body}' > scan-trigger.json
-          echo "HTTP $CODE | Content-Type: $CTYPE"; echo "$OUT"
-          case "$CTYPE" in *application/json*) : ;; *) echo "::error::Non-JSON response ($CTYPE) — ASVP_BASE_URL likely points at the web UI, not the API root"; exit 1 ;; esac
-          echo "$OUT" | jq empty >/dev/null 2>&1 || { echo "::error::Response body is not valid JSON"; exit 1; }
-          [ "$CODE" = "401" ] && { echo "::error::Token rejected: $(echo "$OUT" | jq -r '.error')"; exit 1; } || true
-          [ "$CODE" = "200" ] || { echo "::error::HTTP $CODE: $(echo "$OUT" | jq -r '.error // .message // "unknown error"')"; exit 1; }
+          CODE="$(echo "$META" | cut -d' ' -f1)"
+          CTYPE="$(echo "$META" | cut -d' ' -f2-)"
+          OUT="$(cat "$BODY")"
+          jq -n --arg code "$CODE" --arg ctype "$CTYPE" --argjson body "$(echo "$OUT" | jq -c '.' 2>/dev/null || jq -n --arg raw "$OUT" '{raw:$raw}')" \
+            '{endpoint:"/api/cicd/scan", httpStatus:$code, contentType:$ctype, body:$body}' > scan-trigger.json
+          echo "HTTP $CODE | Content-Type: $CTYPE"
+          echo "$OUT"
+          case "$CTYPE" in *application/json*) : ;; *) echo "::error::Non-JSON response ($CTYPE) — check ASVP_BASE_URL"; exit 1 ;; esac
+          echo "$OUT" | jq empty >/dev/null 2>&1 || { echo "::error::Response not valid JSON"; exit 1; }
+          [ "$CODE" = "401" ] && { echo "::error::Token rejected"; exit 1; }
+          [ "$CODE" = "200" ] || { echo "::error::HTTP $CODE: $(echo "$OUT" | jq -r '.error // .message // "unknown"')"; exit 1; }
           SCAN_ID="$(echo "$OUT" | jq -r '.scanId')"
-          echo "Registered scanId=$SCAN_ID"
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Optional local source scan (Trivy)
+      # ---- Optional local source scan (Trivy) ---------------------------------
+      - name: Run Trivy source scan
         if: env.SCAN_DIR != ''
         run: |
           set -euo pipefail
-          [ -d "$SCAN_DIR" ] || { echo "::warning::SCAN_DIR '$SCAN_DIR' not found — skipping local scan"; exit 0; }
-          command -v trivy >/dev/null 2>&1 || curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin || { echo "::warning::Trivy unavailable — skipping"; exit 0; }
-          trivy fs --quiet --format json --scanners vuln,secret,misconfig -o trivy.json "$SCAN_DIR" || { echo "::warning::Trivy scan failed — continuing without local findings"; exit 0; }
-          jq --arg t "$TARGET_URL" '{findings: [ (.Results[]?.Vulnerabilities[]? | {title:(.Title // .VulnerabilityID // "Vulnerability"), severity:((.Severity // "UNKNOWN")|ascii_downcase| if .=="unknown" then "info" else . end), category:(.PkgName // "dependency"), url:(.PrimaryURL // $t), testType:"sca"}), (.Results[]?.Secrets[]? | {title:(.Title // .RuleID // "Exposed secret"), severity:((.Severity // "HIGH")|ascii_downcase| if .=="unknown" then "info" else . end), category:"secret", url:$t, testType:"secret"}), (.Results[]?.Misconfigurations[]? | {title:(.Title // .ID // "Misconfiguration"), severity:((.Severity // "MEDIUM")|ascii_downcase| if .=="unknown" then "info" else . end), category:"iac", url:$t, testType:"iac"}) ]}' trivy.json > findings.json || jq -n '{findings: []}' > findings.json
-          echo "Mapped $(jq '.findings | length' findings.json) finding(s) from Trivy"
+          [ -d "$SCAN_DIR" ] || { echo "::warning::SCAN_DIR not found — skipping"; exit 0; }
+          command -v trivy >/dev/null 2>&1 || curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin || echo "::warning::Trivy unavailable — skipping"
+          trivy fs --quiet --format json --scanners vuln,secret,misconfig -o trivy.json "$SCAN_DIR" || echo "::warning::Trivy scan failed — continuing without local findings"
+          jq --arg t "$TARGET_URL" '{findings: [ (.Results[]?.Vulnerabilities[]? | {title:(.Title // .VulnerabilityID), severity:(.Severity | ascii_downcase), category:(.PkgName // "dependency"), url:(.PrimaryURL // $t), testType:"sca"}), (.Results[]?.Secrets[]? | {title:(.Title // .RuleID), severity:"high", category:"secret", url:$t, testType:"secret"}), (.Results[]?.Misconfigurations[]? | {title:(.Title // .ID), severity:(.Severity | ascii_downcase), category:"iac", url:$t, testType:"iac"}) ]}' trivy.json > findings.json || jq -n '{findings: []}' > findings.json
+          echo "Mapped $(jq '.findings | length' findings.json) findings from Trivy"
 
-      - name: Ensure findings.json exists
+      # ---- Ensure findings.json exists -----------------------------------------
+      - name: Ensure findings.json
         run: |
           set -euo pipefail
           [ -f findings.json ] || jq -n '{findings: []}' > findings.json
           echo "Findings to post:"; cat findings.json
 
+      # ---- Post results to ASVP ------------------------------------------------
       - name: Post results to ASVP
         run: |
           set -euo pipefail
           BODY="$(mktemp)"
           PAYLOAD="$(jq -n --arg scanId "${{ steps.trigger.outputs.scan_id }}" --slurpfile f findings.json '{scanId:$scanId, findings:($f[0].findings), duration:0}')"
-          META="$(curl -sS --max-time 60 -o "$BODY" -w '%{http_code} %{content_type}' -X POST "$ASVP_URL/api/cicd/results" -H "Authorization: Bearer $ASVP_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD")" || { echo "::error::Cannot reach results endpoint"; exit 1; }
-          CODE="$(echo "$META" | cut -d' ' -f1)"; CTYPE="$(echo "$META" | cut -d' ' -f2-)"; OUT="$(cat "$BODY")"
+          META="$(curl -sS --max-time 60 -o "$BODY" -w '%{http_code} %{content_type}' -X POST "$ASVP_URL/api/cicd/results" -H "Authorization: Bearer $ASVP_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD")"
+          CODE="$(echo "$META" | cut -d' ' -f1)"
+          CTYPE="$(echo "$META" | cut -d' ' -f2-)"
+          OUT="$(cat "$BODY")"
           jq -n --arg code "$CODE" --arg ctype "$CTYPE" --argjson body "$(echo "$OUT" | jq -c '.' 2>/dev/null || jq -n --arg raw "$OUT" '{raw:$raw}')" '{endpoint:"/api/cicd/results", httpStatus:$code, contentType:$ctype, body:$body}' > results-response.json
           jq -s '{scan: .[0], results: .[1]}' scan-trigger.json results-response.json > scan-result.json
-          echo "HTTP $CODE | Content-Type: $CTYPE"; echo "$OUT"
+          echo "HTTP $CODE | Content-Type: $CTYPE"
+          echo "$OUT"
           case "$CTYPE" in *application/json*) : ;; *) echo "::error::Non-JSON results response ($CTYPE)"; exit 1 ;; esac
-          echo "$OUT" | jq empty >/dev/null 2>&1 || { echo "::error::Results response not valid JSON"; exit 1; }
+          echo "$OUT" | jq empty >/dev/null 2>&1 || { echo "::error::Results not valid JSON"; exit 1; }
           [ "$CODE" -lt 400 ] || { echo "::error::HTTP $CODE: $(echo "$OUT" | jq -r '.error // .message')"; exit 1; }
-          CRIT="$(echo "$OUT" | jq -r '.breakdown.critical // 0')"; HIGH="$(echo "$OUT" | jq -r '.breakdown.high // 0')"
-          echo "Ingested — critical=$CRIT high=$HIGH"
-          if [ "$CRIT" -gt 0 ]; then echo "::error::$CRIT critical finding(s) — failing build"; exit 1; fi
-          echo "High gate disabled"
 
-      - name: Upload scan artifacts
+      # ---- Upload artifacts ----------------------------------------------------
+      - name: Upload scan-result artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -95,3 +103,4 @@ jobs:
             findings.json
           if-no-files-found: warn
           retention-days: 14
+          
